@@ -4,6 +4,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import random
 
+import time
+
 # --- Helper Functions ---
 
 def generate_graph(graph_type, n):
@@ -17,11 +19,15 @@ def generate_graph(graph_type, n):
     return nx.empty_graph(n)
 
 def run_monte_carlo(G, q, trials):
-    """Runs Monte Carlo simulation for network reliability."""
+    """Runs Monte Carlo simulation for network reliability with a progress bar."""
     connected_count = 0
     edges = list(G.edges())
     
-    for _ in range(trials):
+    # Check if we are in a Streamlit context
+    progress_bar = st.empty()
+    status_text = st.empty()
+    
+    for i in range(trials):
         # Create a copy of the graph for each trial
         G_trial = G.copy()
         for u, v in edges:
@@ -31,7 +37,15 @@ def run_monte_carlo(G, q, trials):
         # Check if still connected
         if nx.is_connected(G_trial):
             connected_count += 1
+        
+        # Update progress bar occasionally
+        if (i + 1) % max(1, trials // 10) == 0:
+            progress_bar.progress((i + 1) / trials)
+            status_text.text(f"Simulating Trial {i+1}/{trials}...")
+            # No sleep here to keep it fast, the 10% frequency reduces flickering
             
+    progress_bar.empty()
+    status_text.empty()
     return connected_count / trials
 
 # --- Streamlit UI ---
@@ -51,6 +65,7 @@ n_trials = st.sidebar.slider("Monte Carlo Trials", min_value=10, max_value=2000,
 
 # Main Content
 G = generate_graph(graph_type, n_nodes)
+pos = nx.spring_layout(G, k=0.5) # Calculate layout once
 reliability = run_monte_carlo(G, q_fail, n_trials)
 
 st.subheader(f"Results for {graph_type} Graph")
@@ -63,8 +78,10 @@ with col1:
 
 with col2:
     # Plot the original graph
-    fig, ax = plt.subplots(figsize=(8, 8))
-    pos = nx.spring_layout(G, k=0.5) # Increased k for more space between nodes
+    fig_main, ax_main = plt.subplots(figsize=(8, 8))
+    # Consistent limits for main plot too
+    ax_main.set_xlim(-1.2, 1.2)
+    ax_main.set_ylim(-1.2, 1.2)
     
     # Highlight bridges
     bridges = list(nx.bridges(G))
@@ -73,8 +90,9 @@ with col2:
     # Dynamic node size based on node count
     node_size = max(100, 500 - (n_nodes * 8))
     
-    nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=node_size, edge_color=edge_colors, width=2.5, font_size=8, font_weight='bold', ax=ax)
-    st.pyplot(fig)
+    nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=node_size, edge_color=edge_colors, width=2.5, font_size=8, font_weight='bold', ax=ax_main)
+    st.pyplot(fig_main)
+    plt.close(fig_main)
     if len(bridges) > 0:
         st.caption("Bridges are highlighted in red")
 
@@ -98,26 +116,46 @@ ax_curve.grid(True)
 st.pyplot(fig_curve)
 
 st.divider()
-st.subheader("Simulate One Failure Case")
+st.subheader("Simulate One Failure Case (Animated)")
 if st.button("Simulate One Trial"):
-    G_trial = G.copy()
-    failed_edges = []
-    for u, v in G.edges():
-        if random.random() < q_fail:
-            G_trial.remove_edge(u, v)
-            failed_edges.append((u, v))
-            
-    fig_trial, ax_trial = plt.subplots(figsize=(10, 10))
-    is_conn = nx.is_connected(G_trial)
+    # First, draw the initial state
+    placeholder = st.empty()
+    edges = list(G.edges())
+    random.shuffle(edges) # Randomize order for effect
     
-    # Use the same layout for consistency
-    edge_colors = ['green' if (u, v) in G_trial.edges() or (v, u) in G_trial.edges() else 'lightcoral' for u, v in G.edges()]
+    current_edges_status = {edge: 'green' for edge in edges}
+    failed_edges = []
     
     # Dynamic node size based on node count
     node_size = max(100, 500 - (n_nodes * 8))
-    
-    nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=node_size, edge_color=edge_colors, width=2.5, font_size=8, font_weight='bold', ax=ax_trial)
-    st.pyplot(fig_trial)
+
+    # Animate the "coin flip" for each edge
+    with placeholder.container():
+        fig_trial, ax_trial = plt.subplots(figsize=(8, 8))
+        plot_placeholder = st.empty()
+        
+        for i, edge in enumerate(edges):
+            u, v = edge
+            if random.random() < q_fail:
+                current_edges_status[edge] = 'lightcoral'
+                failed_edges.append(edge)
+            
+            # Only re-draw every few edges or for the first/last few to balance speed
+            if i % max(1, len(edges)//5) == 0 or i == len(edges)-1:
+                ax_trial.clear()
+                # Use a consistent axis limit to prevent jumping
+                ax_trial.set_xlim(-1.2, 1.2)
+                ax_trial.set_ylim(-1.2, 1.2)
+                edge_colors = [current_edges_status[e] if e in current_edges_status else current_edges_status[(e[1], e[0])] for e in G.edges()]
+                nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=node_size, edge_color=edge_colors, width=2.5, font_size=8, font_weight='bold', ax=ax_trial)
+                plot_placeholder.pyplot(fig_trial)
+                time.sleep(0.3) # Give time for class to see the failure
+        plt.close(fig_trial)
+            
+    # Final Connectivity Check
+    G_trial = G.copy()
+    G_trial.remove_edges_from(failed_edges)
+    is_conn = nx.is_connected(G_trial)
     
     if is_conn:
         st.success("Network remained connected!")
@@ -125,12 +163,3 @@ if st.button("Simulate One Trial"):
         st.error("Network disconnected!")
     st.write(f"Failed edges: {len(failed_edges)}")
     st.write(f"Total edges: {G.number_of_edges()}")
-
-st.divider()
-st.subheader("Theory Check")
-bridges = list(nx.bridges(G))
-st.write(f"Number of bridges (cut-edges): {len(bridges)}")
-if len(bridges) > 0:
-    st.info(f"Theory: Reliability is at most (1-q)^k = {(1-q_fail)**len(bridges):.2%}")
-else:
-    st.info("This graph has no bridges. It is more robust than a tree!")
