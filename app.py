@@ -6,6 +6,9 @@ import random
 
 import time
 
+# --- Streamlit Configuration ---
+st.set_page_config(page_title="Network Reliability Visualizer", layout="wide")
+
 # --- Helper Functions ---
 
 def generate_graph(graph_type, n):
@@ -69,7 +72,7 @@ pos = nx.spring_layout(G, k=0.5) # Calculate layout once
 reliability = run_monte_carlo(G, q_fail, n_trials)
 
 st.subheader(f"Results for {graph_type} Graph")
-col1, col2 = st.columns(2)
+col1, col2 = st.columns([1, 3])
 
 with col1:
     st.metric("Estimated Reliability", f"{reliability:.2%}")
@@ -78,7 +81,7 @@ with col1:
 
 with col2:
     # Plot the original graph
-    fig_main, ax_main = plt.subplots(figsize=(8, 8))
+    fig_main, ax_main = plt.subplots(figsize=(15, 8))
     # Consistent limits for main plot too
     ax_main.set_xlim(-1.2, 1.2)
     ax_main.set_ylim(-1.2, 1.2)
@@ -91,7 +94,7 @@ with col2:
     node_size = max(100, 500 - (n_nodes * 8))
     
     nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=node_size, edge_color=edge_colors, width=2.5, font_size=8, font_weight='bold', ax=ax_main)
-    st.pyplot(fig_main)
+    st.pyplot(fig_main, width="stretch")
     plt.close(fig_main)
     if len(bridges) > 0:
         st.caption("Bridges are highlighted in red")
@@ -107,13 +110,13 @@ for q in q_values:
     # Run a smaller number of trials for the curve for speed
     reliability_curve.append(run_monte_carlo(G, q, min(n_trials, 50)))
 
-fig_curve, ax_curve = plt.subplots(figsize=(10, 4))
+fig_curve, ax_curve = plt.subplots(figsize=(12, 5))
 ax_curve.plot(q_values, reliability_curve, marker='o', linestyle='-', color='blue')
 ax_curve.set_xlabel("Failure Probability (q)")
 ax_curve.set_ylabel("Reliability")
 ax_curve.set_title("Network Reliability vs. Failure Probability")
 ax_curve.grid(True)
-st.pyplot(fig_curve)
+st.pyplot(fig_curve, width="stretch")
 
 st.divider()
 st.subheader("Simulate One Failure Case (Animated)")
@@ -131,8 +134,17 @@ if st.button("Simulate One Trial"):
 
     # Animate the "coin flip" for each edge
     with placeholder.container():
-        fig_trial, ax_trial = plt.subplots(figsize=(8, 8))
-        plot_placeholder = st.empty()
+        col_trial1, col_trial2 = st.columns(2)
+        with col_trial1:
+            st.write("**Simulation Process**")
+            plot_placeholder1 = st.empty()
+        with col_trial2:
+            st.write("**Current Resulting Network**")
+            plot_placeholder2 = st.empty()
+        
+        # Create persistent figures to avoid re-creation overhead
+        fig_trial1, ax_trial1 = plt.subplots(figsize=(10, 10))
+        fig_trial2, ax_trial2 = plt.subplots(figsize=(10, 10))
         
         for i, edge in enumerate(edges):
             u, v = edge
@@ -142,15 +154,56 @@ if st.button("Simulate One Trial"):
             
             # Only re-draw every few edges or for the first/last few to balance speed
             if i % max(1, len(edges)//5) == 0 or i == len(edges)-1:
-                ax_trial.clear()
-                # Use a consistent axis limit to prevent jumping
-                ax_trial.set_xlim(-1.2, 1.2)
-                ax_trial.set_ylim(-1.2, 1.2)
+                # --- Plot 1: Simulation Process ---
+                ax_trial1.clear()
+                ax_trial1.set_xlim(-1.2, 1.2)
+                ax_trial1.set_ylim(-1.2, 1.2)
+                ax_trial1.set_axis_off()
+                
+                # Construct a temporary graph to find current connectivity
+                G_temp = G.copy()
+                G_temp.remove_edges_from(failed_edges)
+                
+                # Determine which nodes are 'cut off' (not in the largest component)
+                if len(G_temp.nodes()) > 0:
+                    components = sorted(nx.connected_components(G_temp), key=len, reverse=True)
+                    largest_component = components[0] if components else set()
+                    node_colors1 = ['skyblue' if n in largest_component else 'lightcoral' for n in G.nodes()]
+                    
+                    # For Plot 2: Different colors for different components
+                    # Generate a color map for components
+                    component_map = {}
+                    colors = plt.cm.tab20(np.linspace(0, 1, len(components)))
+                    for idx, comp in enumerate(components):
+                        for node in comp:
+                            component_map[node] = colors[idx]
+                    node_colors2 = [component_map.get(n, 'lightcoral') for n in G.nodes()]
+                else:
+                    node_colors1 = ['lightcoral'] * len(G.nodes())
+                    node_colors2 = ['lightcoral'] * len(G.nodes())
+                
                 edge_colors = [current_edges_status[e] if e in current_edges_status else current_edges_status[(e[1], e[0])] for e in G.edges()]
-                nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=node_size, edge_color=edge_colors, width=2.5, font_size=8, font_weight='bold', ax=ax_trial)
-                plot_placeholder.pyplot(fig_trial)
+                nx.draw(G, pos, with_labels=True, node_color=node_colors1, node_size=node_size, edge_color=edge_colors, width=2.5, font_size=8, font_weight='bold', ax=ax_trial1)
+                plot_placeholder1.pyplot(fig_trial1, width="stretch")
+                
+                # --- Plot 2: Resulting Components ---
+                ax_trial2.clear()
+                ax_trial2.set_xlim(-1.2, 1.2)
+                ax_trial2.set_ylim(-1.2, 1.2)
+                ax_trial2.set_axis_off()
+                
+                # Draw ONLY the edges that have not failed
+                survived_edges = [e for e in G.edges() if e not in failed_edges and (e[1], e[0]) not in failed_edges]
+                nx.draw_networkx_nodes(G, pos, node_color=node_colors2, node_size=node_size, ax=ax_trial2)
+                nx.draw_networkx_labels(G, pos, font_size=8, font_weight='bold', ax=ax_trial2)
+                nx.draw_networkx_edges(G, pos, edgelist=survived_edges, width=2.5, edge_color='green', ax=ax_trial2)
+                
+                plot_placeholder2.pyplot(fig_trial2, width="stretch")
+                
                 time.sleep(0.3) # Give time for class to see the failure
-        plt.close(fig_trial)
+        
+        plt.close(fig_trial1)
+        plt.close(fig_trial2)
             
     # Final Connectivity Check
     G_trial = G.copy()
