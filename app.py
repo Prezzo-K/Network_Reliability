@@ -11,6 +11,7 @@ st.set_page_config(page_title="Network Reliability Visualizer", layout="wide")
 
 # --- Helper Functions ---
 
+@st.cache_data
 def generate_graph(graph_type, n):
     """Generates a graph based on type and number of nodes."""
     if graph_type == "Tree":
@@ -21,35 +22,77 @@ def generate_graph(graph_type, n):
         return nx.complete_graph(n)
     return nx.empty_graph(n)
 
-def run_monte_carlo(G, q, trials):
-    """Runs Monte Carlo simulation for network reliability with a progress bar."""
+@st.cache_data
+def _run_monte_carlo_core(edges_list, n_nodes, q, trials):
+    """Core simulation logic, cached for speed and to avoid flickering."""
     connected_count = 0
-    edges = list(G.edges())
-    
-    # Check if we are in a Streamlit context
-    progress_bar = st.empty()
-    status_text = st.empty()
+    # Re-create a skeleton graph to check connectivity
+    G_base = nx.Graph()
+    G_base.add_nodes_from(range(n_nodes))
+    G_base.add_edges_from(edges_list)
     
     for i in range(trials):
-        # Create a copy of the graph for each trial
-        G_trial = G.copy()
-        for u, v in edges:
+        G_trial = G_base.copy()
+        # Randomly remove edges
+        for u, v in edges_list:
             if random.random() < q:
                 G_trial.remove_edge(u, v)
         
-        # Check if still connected
         if nx.is_connected(G_trial):
             connected_count += 1
-        
-        # Update progress bar occasionally
-        if (i + 1) % max(1, trials // 10) == 0:
-            progress_bar.progress((i + 1) / trials)
-            status_text.text(f"Simulating Trial {i+1}/{trials}...")
-            # No sleep here to keep it fast, the 10% frequency reduces flickering
             
-    progress_bar.empty()
-    status_text.empty()
     return connected_count / trials
+
+def run_monte_carlo(G, q, trials, progress_elements=None):
+    """Wrapper that handles optional progress bar updates."""
+    if progress_elements is None:
+        # If no progress needed, just call the core logic
+        return _run_monte_carlo_core(list(G.edges()), len(G.nodes()), q, trials)
+    
+    progress_bar, status_text = progress_elements
+    connected_count = 0
+    edges = list(G.edges())
+    n_nodes = len(G.nodes())
+    
+    # Run in chunks to show progress while still benefiting from core logic for small batches
+    # or just run the whole thing if trials are small.
+    # To keep it simple and responsive, we'll run in 10 steps.
+    steps = 10
+    trials_per_step = max(1, trials // steps)
+    total_connected = 0
+    
+    for step in range(steps):
+        current_trials = trials_per_step if step < steps - 1 else trials - (trials_per_step * step)
+        if current_trials <= 0: continue
+        
+        # We don't cache the chunks because the seed changes, 
+        # but the main call for the curve will use the cached core function above.
+        # Actually, for the main simulation with progress, we don't necessarily need caching 
+        # because the progress bar IS the interaction.
+        # But we want the CURVE to be cached.
+        
+        # Core logic for a single trial loop (not cached here to allow progress)
+        step_connected = 0
+        G_base = nx.Graph()
+        G_base.add_nodes_from(range(n_nodes))
+        G_base.add_edges_from(edges)
+        
+        for _ in range(current_trials):
+            G_trial = G_base.copy()
+            for u, v in edges:
+                if random.random() < q:
+                    G_trial.remove_edge(u, v)
+            if nx.is_connected(G_trial):
+                step_connected += 1
+        
+        total_connected += step_connected
+        
+        # Update progress bar
+        progress = (step + 1) / steps
+        progress_bar.progress(progress)
+        status_text.text(f"Simulating Trial {(step + 1) * trials_per_step}/{trials}...")
+        
+    return total_connected / trials
 
 # --- Streamlit UI ---
 
@@ -66,57 +109,85 @@ n_nodes = st.sidebar.slider("Number of Nodes (n)", min_value=3, max_value=50, va
 q_fail = st.sidebar.slider("Edge Failure Probability (q)", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
 n_trials = st.sidebar.slider("Monte Carlo Trials", min_value=10, max_value=2000, value=100, step=10)
 
+run_sim = st.sidebar.button("Run Simulation", type="primary", use_container_width=True)
+
+# Initialize session state for results
+if 'reliability' not in st.session_state:
+    st.session_state.reliability = None
+if 'reliability_curve' not in st.session_state:
+    st.session_state.reliability_curve = None
+if 'last_config' not in st.session_state:
+    st.session_state.last_config = None
+
+current_config = (graph_type, n_nodes, q_fail, n_trials)
+
 # Main Content
 G = generate_graph(graph_type, n_nodes)
-pos = nx.spring_layout(G, k=0.5) # Calculate layout once
-reliability = run_monte_carlo(G, q_fail, n_trials)
+pos = nx.spring_layout(G, k=0.5, seed=42) # Calculate layout once with seed for consistency
 
-st.subheader(f"Results for {graph_type} Graph")
-col1, col2 = st.columns([1, 3])
+# Check if we should run or if config changed
+if run_sim or (st.session_state.reliability is None):
+    # Main Reliability Calculation with Progress Bar (in Sidebar to avoid layout jumps)
+    with st.sidebar:
+        st.divider()
+        st.write("**Simulation Progress**")
+        p_bar = st.progress(0)
+        p_text = st.empty()
+        st.session_state.reliability = run_monte_carlo(G, q_fail, n_trials, progress_elements=(p_bar, p_text))
+        p_text.text("Simulation Complete!")
+        
+        # Also pre-calculate the curve for the results section
+        q_values = np.linspace(0, 1, 11)
+        curve_data = []
+        for q in q_values:
+            curve_data.append(run_monte_carlo(G, q, min(n_trials, 50)))
+        st.session_state.reliability_curve = curve_data
+        st.session_state.last_config = current_config
 
-with col1:
-    st.metric("Estimated Reliability", f"{reliability:.2%}")
-    st.write(f"Number of Nodes: {n_nodes}")
-    st.write(f"Number of Edges: {G.number_of_edges()}")
+# Display Results if available
+if st.session_state.reliability is not None:
+    # If the config has changed but we haven't clicked run, show a warning
+    if st.session_state.last_config != current_config:
+        st.warning("Configuration has changed. Click 'Run Simulation' to update results.")
 
-with col2:
-    # Plot the original graph
-    fig_main, ax_main = plt.subplots(figsize=(15, 8))
-    # Consistent limits for main plot too
-    ax_main.set_xlim(-1.2, 1.2)
-    ax_main.set_ylim(-1.2, 1.2)
-    
-    # Highlight bridges
-    bridges = list(nx.bridges(G))
-    edge_colors = ['red' if (u, v) in bridges or (v, u) in bridges else 'gray' for u, v in G.edges()]
-    
-    # Dynamic node size based on node count
-    node_size = max(100, 500 - (n_nodes * 8))
-    
-    nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=node_size, edge_color=edge_colors, width=2.5, font_size=8, font_weight='bold', ax=ax_main)
-    st.pyplot(fig_main, width="stretch")
-    plt.close(fig_main)
-    if len(bridges) > 0:
-        st.caption("Bridges are highlighted in red")
+    st.subheader(f"Results for {graph_type} Graph")
+    col1, col2 = st.columns([1, 3])
 
-# Theory connection
-st.divider()
-st.subheader("Reliability Curve")
+    with col1:
+        st.metric("Estimated Reliability", f"{st.session_state.reliability:.2%}")
+        st.write(f"Number of Nodes: {n_nodes}")
+        st.write(f"Number of Edges: {G.number_of_edges()}")
 
-# Generate the curve data
-q_values = np.linspace(0, 1, 11)
-reliability_curve = []
-for q in q_values:
-    # Run a smaller number of trials for the curve for speed
-    reliability_curve.append(run_monte_carlo(G, q, min(n_trials, 50)))
+    with col2:
+        # Plot the original graph
+        fig_main, ax_main = plt.subplots(figsize=(15, 8))
+        ax_main.set_xlim(-1.2, 1.2)
+        ax_main.set_ylim(-1.2, 1.2)
+        
+        bridges = list(nx.bridges(G))
+        edge_colors = ['red' if (u, v) in bridges or (v, u) in bridges else 'gray' for u, v in G.edges()]
+        node_size = max(100, 500 - (n_nodes * 8))
+        
+        nx.draw(G, pos, with_labels=True, node_color='skyblue', node_size=node_size, edge_color=edge_colors, width=2.5, font_size=8, font_weight='bold', ax=ax_main)
+        st.pyplot(fig_main, width="stretch")
+        plt.close(fig_main)
+        if len(bridges) > 0:
+            st.caption("Bridges are highlighted in red")
 
-fig_curve, ax_curve = plt.subplots(figsize=(12, 5))
-ax_curve.plot(q_values, reliability_curve, marker='o', linestyle='-', color='blue')
-ax_curve.set_xlabel("Failure Probability (q)")
-ax_curve.set_ylabel("Reliability")
-ax_curve.set_title("Network Reliability vs. Failure Probability")
-ax_curve.grid(True)
-st.pyplot(fig_curve, width="stretch")
+    # Theory connection
+    st.divider()
+    st.subheader("Reliability Curve")
+
+    fig_curve, ax_curve = plt.subplots(figsize=(12, 5))
+    q_values = np.linspace(0, 1, 11)
+    ax_curve.plot(q_values, st.session_state.reliability_curve, marker='o', linestyle='-', color='blue')
+    ax_curve.set_xlabel("Failure Probability (q)")
+    ax_curve.set_ylabel("Reliability")
+    ax_curve.set_title("Network Reliability vs. Failure Probability")
+    ax_curve.grid(True)
+    st.pyplot(fig_curve, width="stretch")
+else:
+    st.info("Adjust the configuration and click 'Run Simulation' to start.")
 
 st.divider()
 st.subheader("Simulate One Failure Case (Animated)")
