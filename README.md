@@ -5,7 +5,7 @@ An interactive web application built with **Streamlit** to simulate and visualiz
 ##  Overview
 This project explores the mathematical and computational aspects of **Network Reliability**. It uses **Monte Carlo simulations** to estimate the probability that a graph remains connected when its edges fail with a probability $q$.
 
-## 🛠️ Features
+##  Features
 - **Interactive Graph Generation**: Choose between **Tree**, **Cycle**, and **Complete** graphs.
 - **Monte Carlo Engine**: Simulate up to 2,000 trials with real-time progress tracking.
 - **Visual Failure Animation**: Watch a "step-by-step" simulation of edge failures to see how networks disconnect in real-time.
