@@ -2,6 +2,8 @@
 
 An interactive web application built with **Streamlit** to simulate and visualize the reliability of different network structures under random edge failures.
 
+See demo here -> **[StreamLit Link](https://network-reliability.streamlit.app/)**
+
 ##  Overview
 This project explores the mathematical and computational aspects of **Network Reliability**. It uses **Monte Carlo simulations** to estimate the probability that a graph remains connected when its edges fail with a probability $q$.
 
